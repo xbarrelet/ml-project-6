@@ -3,6 +3,7 @@ import os
 import shutil
 from xml.etree import ElementTree
 
+import keras
 import tensorflow as tf
 from PIL import Image
 from keras import layers, Sequential, Input, Model
@@ -12,7 +13,6 @@ from matplotlib import pyplot as plt
 from pandas import DataFrame
 from plot_keras_history import show_history, plot_history
 from sklearn.preprocessing import LabelEncoder
-import keras
 
 IMAGES_PATH = "resources/Images"
 CROPPED_IMAGES_PATH = "resources/Cropped_Images"
@@ -163,7 +163,6 @@ if __name__ == '__main__':
 
     # print_images_dimensions(images_df)
 
-
     image_size = (200, 200)
     batch_size = 32
 
@@ -172,22 +171,22 @@ if __name__ == '__main__':
     dataset_test = get_dataset(CROPPED_IMAGES_PATH, data_type=None)
 
     # Création du callback
-    model_save_path = f"{MODELS_PATH}/model_best_weights.keras"
+    model_save_path = f"{MODELS_PATH}/custom_model_best_weights.keras"
     checkpoint = ModelCheckpoint(model_save_path, monitor='val_loss', verbose=1, save_best_only=True, mode='min')
     es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)
     callbacks_list = [checkpoint, es]
 
-
     with tf.device('/gpu:0'):
-        model = make_model(input_shape=image_size + (3,), num_classes=2)
-        plot_model(model, show_shapes=True)
+        model = make_model(input_shape=image_size + (3,), num_classes=120)
+        # plot_model(model, show_shapes=True)
 
         epochs = 50
 
-        callbacks = [
-            keras.callbacks.ModelCheckpoint("save_at_{epoch}.keras"),
-        ]
+        # callbacks = [
+        #     keras.callbacks.ModelCheckpoint("save_at_{epoch}.keras"),
+        # ]
 
+        # TODO: Loss et metrics sont pas corrects
         model.compile(
             optimizer=keras.optimizers.Adam(3e-4),
             loss=keras.losses.BinaryCrossentropy(from_logits=True),
@@ -197,12 +196,20 @@ if __name__ == '__main__':
         history = model.fit(
             dataset_train,
             epochs=epochs,
-            callbacks=callbacks,
+            callbacks=callbacks_list,
             validation_data=dataset_val,
         )
 
-        show_history(history)
-        plot_history(history, path="custom_model_history.png")
+        # Score of last epoch
+        loss, accuracy = model.evaluate(dataset_train, verbose=True)
+        print("Training Accuracy   : {:.4f}".format(accuracy))
+        print()
+        loss, accuracy = model.evaluate(dataset_val, verbose=True)
+        print("Validation Accuracy :  {:.4f}".format(accuracy))
+
+        loss, accuracy = model.evaluate(dataset_test, verbose=False)
+        print("Test Accuracy       :  {:.4f}".format(accuracy))
+
+        # show_history(history)
+        plot_history(history, path="custom_model_results.png")
         plt.close()
-
-

@@ -3,6 +3,7 @@ import os
 import shutil
 from xml.etree import ElementTree
 
+import matplotlib.pyplot as plt
 import tensorflow as tf
 from PIL import Image
 from keras import layers, Sequential
@@ -10,10 +11,8 @@ from keras.src.applications.vgg16 import VGG16
 from keras.src.callbacks import ModelCheckpoint, EarlyStopping
 from keras.src.utils import image_dataset_from_directory
 from pandas import DataFrame
-from sklearn.preprocessing import LabelEncoder
-
 from plot_keras_history import show_history, plot_history
-import matplotlib.pyplot as plt
+from sklearn.preprocessing import LabelEncoder
 
 IMAGES_PATH = "resources/Images"
 CROPPED_IMAGES_PATH = "resources/Cropped_Images"
@@ -141,7 +140,6 @@ if __name__ == '__main__':
 
     # print_images_dimensions(images_df)
 
-
     image_size = (200, 200)
     batch_size = 32
 
@@ -154,7 +152,6 @@ if __name__ == '__main__':
     checkpoint = ModelCheckpoint(model_save_path, monitor='val_loss', verbose=1, save_best_only=True, mode='min')
     es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)
     callbacks_list = [checkpoint, es]
-
 
     with tf.device('/gpu:0'):
         model = create_model()
