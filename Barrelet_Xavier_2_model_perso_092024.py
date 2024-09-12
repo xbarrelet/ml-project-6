@@ -5,15 +5,14 @@ from xml.etree import ElementTree
 
 import tensorflow as tf
 from PIL import Image
-from keras import layers, Sequential
-from keras.src.applications.vgg16 import VGG16
+from keras import layers, Sequential, Input, Model
 from keras.src.callbacks import ModelCheckpoint, EarlyStopping
-from keras.src.utils import image_dataset_from_directory
+from keras.src.utils import image_dataset_from_directory, plot_model
+from matplotlib import pyplot as plt
 from pandas import DataFrame
-from sklearn.preprocessing import LabelEncoder
-
 from plot_keras_history import show_history, plot_history
-import matplotlib.pyplot as plt
+from sklearn.preprocessing import LabelEncoder
+import keras
 
 IMAGES_PATH = "resources/Images"
 CROPPED_IMAGES_PATH = "resources/Cropped_Images"
@@ -106,26 +105,49 @@ def get_dataset(path, validation_split=0.0, data_type=None):
     )
 
 
-def create_model():
-    model_base = VGG16(include_top=False, weights="imagenet", input_shape=(200, 200, 3))
-    for layer in model_base.layers:
-        layer.trainable = False
+def make_model(input_shape, num_classes):
+    inputs = Input(shape=input_shape)
 
-    model = Sequential([
-        data_augmentation_layers,
-        layers.Rescaling(1. / 127.5, offset=-1),
-        model_base,
-        layers.GlobalAveragePooling2D(),
-        layers.Dense(256, activation='relu'),
-        layers.Dropout(0.5),
-        layers.Dense(120, activation='softmax')
-    ])
+    # Entry block
+    x = layers.Rescaling(1.0 / 255)(inputs)
+    x = layers.Conv2D(128, 3, strides=2, padding="same")(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation("relu")(x)
 
-    model.compile(loss="categorical_crossentropy", optimizer='adam', metrics=["accuracy"])
+    previous_block_activation = x  # Set aside residual
 
-    print(model.summary())
+    for size in [256, 512, 728]:
+        x = layers.Activation("relu")(x)
+        x = layers.SeparableConv2D(size, 3, padding="same")(x)
+        x = layers.BatchNormalization()(x)
 
-    return model
+        x = layers.Activation("relu")(x)
+        x = layers.SeparableConv2D(size, 3, padding="same")(x)
+        x = layers.BatchNormalization()(x)
+
+        x = layers.MaxPooling2D(3, strides=2, padding="same")(x)
+
+        # Project residual
+        residual = layers.Conv2D(size, 1, strides=2, padding="same")(
+            previous_block_activation
+        )
+        x = layers.add([x, residual])  # Add back residual
+        previous_block_activation = x  # Set aside next residual
+
+    x = layers.SeparableConv2D(1024, 3, padding="same")(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation("relu")(x)
+
+    x = layers.GlobalAveragePooling2D()(x)
+    if num_classes == 2:
+        units = 1
+    else:
+        units = num_classes
+
+    x = layers.Dropout(0.25)(x)
+    # We specify activation=None so as to return logits
+    outputs = layers.Dense(units, activation=None)(x)
+    return Model(inputs, outputs)
 
 
 if __name__ == '__main__':
@@ -157,31 +179,30 @@ if __name__ == '__main__':
 
 
     with tf.device('/gpu:0'):
-        model = create_model()
+        model = make_model(input_shape=image_size + (3,), num_classes=2)
+        plot_model(model, show_shapes=True)
 
-        history = model.fit(dataset_train,
-                            validation_data=dataset_val,
-                            batch_size=batch_size,
-                            epochs=50,
-                            callbacks=callbacks_list,
-                            verbose=1)
+        epochs = 50
 
-        # Score of last epoch
-        loss, accuracy = model.evaluate(dataset_train, verbose=True)
-        print("Training Accuracy   : {:.4f}".format(accuracy))
-        print()
-        loss, accuracy = model.evaluate(dataset_val, verbose=True)
-        print("Validation Accuracy :  {:.4f}".format(accuracy))
+        callbacks = [
+            keras.callbacks.ModelCheckpoint("save_at_{epoch}.keras"),
+        ]
 
-        # Score of optimal epoch
-        model.load_weights(model_save_path)
+        model.compile(
+            optimizer=keras.optimizers.Adam(3e-4),
+            loss=keras.losses.BinaryCrossentropy(from_logits=True),
+            metrics=[keras.metrics.BinaryAccuracy(name="acc")],
+        )
 
-        loss, accuracy = model.evaluate(dataset_val, verbose=False)
-        print("Validation Accuracy :  {:.4f}".format(accuracy))
-
-        loss, accuracy = model.evaluate(dataset_test, verbose=False)
-        print("Test Accuracy       :  {:.4f}".format(accuracy))
+        history = model.fit(
+            dataset_train,
+            epochs=epochs,
+            callbacks=callbacks,
+            validation_data=dataset_val,
+        )
 
         show_history(history)
-        plot_history(history, path="transfer_learning_history.png")
+        plot_history(history, path="custom_model_history.png")
         plt.close()
+
+
