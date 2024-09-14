@@ -1,36 +1,33 @@
 import os
 import shutil
-from xml.etree import ElementTree
+import time
 
+import keras
 import matplotlib.pyplot as plt
 import tensorflow as tf
 from keras import layers, Sequential
-from keras.src.applications import imagenet_utils
-from keras.src.applications.vgg16 import VGG16
+from keras.src.applications.convnext import ConvNeXtXLarge
+from keras.src.applications.efficientnet_v2 import EfficientNetV2L
+from keras.src.applications.inception_resnet_v2 import InceptionResNetV2
+from keras.src.applications.resnet_v2 import ResNet152V2
+from keras.src.applications.vgg19 import VGG19
+from keras.src.applications.xception import Xception
 from keras.src.callbacks import ModelCheckpoint, EarlyStopping
 from keras.src.utils import image_dataset_from_directory
-from plot_keras_history import show_history, plot_history
+from pandas import DataFrame
+from plot_keras_history import plot_history
 
 CROPPED_IMAGES_PATH = "resources/Cropped_Images"
 MODELS_PATH = "models/transfer_learning"
+RESULTS_PATH = "results/transfer_learning"
 
 
-def remove_last_generated_model():
+def remove_last_generated_models_and_results():
     shutil.rmtree(MODELS_PATH, ignore_errors=True)
-    os.mkdir(MODELS_PATH)
+    os.makedirs(MODELS_PATH)
 
-
-def extract_information_from_annotations(image_path):
-    annotation_path = image_path.replace("Images", "Annotation").replace(".jpg", "")
-
-    tree = ElementTree.parse(annotation_path)
-    x_min = int(list(tree.iter('xmin'))[0].text)
-    x_max = int(list(tree.iter('xmax'))[0].text)
-    y_min = int(list(tree.iter('ymin'))[0].text)
-    y_max = int(list(tree.iter('ymax'))[0].text)
-    race = list(tree.iter('name'))[0].text.lower()
-
-    return (x_min, y_min, x_max, y_max), race
+    shutil.rmtree(RESULTS_PATH, ignore_errors=True)
+    os.makedirs(RESULTS_PATH)
 
 
 def get_dataset(path, image_size, validation_split=0.0, data_type=None):
@@ -47,10 +44,8 @@ def get_dataset(path, image_size, validation_split=0.0, data_type=None):
     )
 
 
-def create_model(image_size):
-    model_base = VGG16(include_top=False, weights="imagenet", input_shape=image_size + (3,))
-    # Resnet, Xception
-    for layer in model_base.layers:
+def create_model(image_size, base_model):
+    for layer in base_model.layers:
         layer.trainable = False
 
     data_augmentation_layers = Sequential([
@@ -64,7 +59,7 @@ def create_model(image_size):
         layers.Rescaling(1. / 127.5, offset=-1),
 
         # Pre-trained model without the top
-        model_base,
+        base_model,
 
         # Convert the feature map from the encoder part of the model (without the top) to a vector
         layers.GlobalAveragePooling2D(),
@@ -83,14 +78,61 @@ def create_model(image_size):
     # Crossentropy as we're getting closer to a correct prediction of the labels.
     model.compile(loss="categorical_crossentropy", optimizer='adam', metrics=["accuracy"])
 
-    print(model.summary())
+    # print(model.summary())
 
     return model
 
 
+def get_base_model(base_model, image_size):
+    preprocessing_input = keras.layers.Input([224, 224, 3])
+
+    match base_model:
+        case "VGG19":
+            return (VGG19(include_top=False, weights="imagenet", input_shape=image_size + (3,),
+                          input_tensor=keras.applications.vgg19.preprocess_input(preprocessing_input)))
+        case "Xception":
+            return (Xception(include_top=False, weights="imagenet", input_shape=image_size + (3,),
+                             input_tensor=keras.applications.xception.preprocess_input(preprocessing_input)))
+        case "ResNet152V2":
+            return (ResNet152V2(include_top=False, weights="imagenet", input_shape=image_size + (3,),
+                                input_tensor=keras.applications.resnet_v2.preprocess_input(preprocessing_input)))
+        case "InceptionResNetV2":
+            return (InceptionResNetV2(include_top=False, weights="imagenet", input_shape=image_size + (3,),
+                                      input_tensor=keras.applications.inception_resnet_v2.preprocess_input(preprocessing_input)))
+        case "EfficientNetV2L":
+            # The preprocessing logic has been included in the EfficientNetV2 model implementation.
+            return EfficientNetV2L(include_top=False, weights="imagenet", input_shape=image_size + (3,))
+        case "ConvNeXtXLarge":
+            # The preprocessing logic has been included in the convnext model implementation.
+            return ConvNeXtXLarge(include_top=False, weights="imagenet", input_shape=image_size + (3,))
+        case _:
+            return None
+
+
+def create_results_plots(results):
+    create_results_plot(results, "fitting_time", ascending=True)
+    create_results_plot(results, "test_accuracy")
+    create_results_plot(results, "test_loss", ascending=True)
+    create_results_plot(results, "val_accuracy")
+    create_results_plot(results, "val_loss", ascending=True)
+
+
+def create_results_plot(results, metric, ascending=False):
+    results.sort_values(metric, ascending=ascending, inplace=True)
+
+    performance_plot = (results[[metric, "model_name"]]
+                        .plot(kind="bar", x="model_name", figsize=(15, 8), rot=0,
+                              title=f"Models Sorted by {metric}"))
+    performance_plot.title.set_size(20)
+    performance_plot.set(xlabel=None)
+
+    performance_plot.get_figure().savefig(f"{RESULTS_PATH}/{metric}_plot.png", bbox_inches='tight')
+    plt.close()
+
+
 if __name__ == '__main__':
-    print("Starting analysis and preprocessing script.\n")
-    remove_last_generated_model()
+    print("Starting transfer learning script.\n")
+    remove_last_generated_models_and_results()
 
     image_size = (224, 224)
     batch_size = 32
@@ -100,36 +142,78 @@ if __name__ == '__main__':
     dataset_test = get_dataset(CROPPED_IMAGES_PATH, image_size, data_type=None)
 
     with tf.device('/gpu:0'):
-        model = create_model(image_size)
 
-        model_save_path = f"{MODELS_PATH}/model_best_weights.keras"
-        checkpoint = ModelCheckpoint(model_save_path, monitor='val_loss', verbose=1, save_best_only=True, mode='min')
-        es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)
-        callbacks_list = [checkpoint, es]
+        histories = []
+        results = []
+        for model_name in [
+            "VGG19",
+            "Xception",
+            "ResNet152V2",
+            "InceptionResNetV2",
+            # "EfficientNetV2L",
+            # "ConvNeXtXLarge"
+        ]:
+            print(f"Training model {model_name}.\n")
 
-        preprocessed_dataset_train = imagenet_utils.preprocess_input(dataset_train, mode="tf")
-        history = model.fit(preprocessed_dataset_train,
-                            validation_data=dataset_val,
-                            batch_size=batch_size,
-                            epochs=100,  # We want early stopping to stop the training itself
-                            callbacks=callbacks_list,
-                            verbose=1)
+            base_model = get_base_model(model_name, image_size)
 
-        # Score of last epoch
-        loss, accuracy = model.evaluate(dataset_train, verbose=True)
-        print(f"\nTraining Accuracy:{accuracy}.\n")
-        loss, accuracy = model.evaluate(dataset_val, verbose=True)
-        print(f"\nValidation Accuracy:{accuracy}.\n")
+            model = create_model(image_size, base_model)
+            model_save_path = f"{MODELS_PATH}/{model_name}_best_weights.keras"
 
-        # Score of optimal epoch
-        model.load_weights(model_save_path)
+            checkpoint = ModelCheckpoint(model_save_path, monitor='val_loss', verbose=1, save_best_only=True,
+                                         mode='min')
+            es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)
+            callbacks_list = [checkpoint, es]
 
-        loss, accuracy = model.evaluate(dataset_val, verbose=False)
-        print(f"\nValidation Accuracy:{accuracy}.\n")
+            fitting_start_time = time.time()
+            history = model.fit(dataset_train,
+                                validation_data=dataset_val,
+                                batch_size=batch_size,
+                                epochs=5,
+                                # epochs=100,  # We want early stopping to stop the training itself
+                                callbacks=callbacks_list,
+                                verbose=1)
+            fitting_time = time.time() - fitting_start_time
 
-        loss, accuracy = model.evaluate(dataset_test, verbose=False)
-        print(f"\nTest Accuracy:{accuracy}.\n")
+            histories.append(history)
+            print("The model has been fitted, checking their loss and accuracy.\n")
 
-        show_history(history)
-        plot_history(history, path="transfer_learning_history.png")
-        plt.close()
+            # Score of last epoch, useful?
+            # loss, accuracy = model.evaluate(dataset_train, verbose=True)
+            # print(f"\nTraining Accuracy:{accuracy}.\n")
+            # loss, accuracy = model.evaluate(dataset_val, verbose=True)
+            # print(f"\nValidation Accuracy:{accuracy}.\n")
+
+            # Score of optimal epoch
+            model.load_weights(model_save_path)
+
+            val_loss, val_accuracy = model.evaluate(dataset_val, verbose=False)
+            print(f"\nValidation Accuracy:{val_accuracy}.\n")
+
+            test_loss, test_accuracy = model.evaluate(dataset_test, verbose=False)
+            print(f"\nTest Accuracy:{test_accuracy}.\n")
+
+            results.append({
+                "model_name": model_name,
+                "fitting_time": fitting_time,
+                "test_accuracy": test_accuracy,
+                "test_loss": test_loss,
+                "validation_accuracy": val_accuracy,
+                "val_loss": val_loss
+            })
+
+            # show_history(history)
+            plot_history(history, path=f"{RESULTS_PATH}/{model_name}_learning_history.png")
+            plt.close()
+
+        print("Plotting all histories.\n")
+        plot_history(
+            histories,
+            show_standard_deviation=False,
+            show_average=True,
+            path=f"{RESULTS_PATH}/all_learning_histories.png"
+        )
+
+        create_results_plots(DataFrame(results))
+
+    print("The transfer learning script is now finished.\n")
