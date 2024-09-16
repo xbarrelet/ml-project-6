@@ -1,6 +1,7 @@
 import glob
 import os
 import shutil
+from os.path import exists
 from xml.etree import ElementTree
 
 import matplotlib.pyplot as plt
@@ -39,7 +40,6 @@ def extract_information_from_annotations(image_path):
 
 
 def extract_cropped_images():
-    shutil.rmtree(CROPPED_IMAGES_PATH, ignore_errors=True)
     os.makedirs(CROPPED_IMAGES_PATH, exist_ok=True)
 
     for image_path in glob.glob(f'{IMAGES_PATH}/*/*.jpg'):
@@ -91,46 +91,26 @@ def print_images_dimensions(images_df):
     print(dimensions_df.describe())
 
 
-def get_dataset(path, validation_split=0.0, data_type=None):
+def get_dataset(path, image_size, validation_split=0.0, data_type=None):
     return image_dataset_from_directory(
         path,
         labels='inferred',
         label_mode='categorical',
         class_names=None,
         batch_size=batch_size,
-        image_size=(200, 200),
+        image_size=image_size,
         seed=42,
         validation_split=validation_split,
         subset=data_type
     )
 
 
-def create_model():
-    model_base = VGG16(include_top=False, weights="imagenet", input_shape=(200, 200, 3))
-    for layer in model_base.layers:
-        layer.trainable = False
-
-    model = Sequential([
-        data_augmentation_layers,
-        layers.Rescaling(1. / 127.5, offset=-1),
-        model_base,
-        layers.GlobalAveragePooling2D(),
-        layers.Dense(256, activation='relu'),
-        layers.Dropout(0.5),
-        layers.Dense(120, activation='softmax')
-    ])
-
-    model.compile(loss="categorical_crossentropy", optimizer='adam', metrics=["accuracy"])
-
-    print(model.summary())
-
-    return model
-
 
 if __name__ == '__main__':
     print("Starting analysis and preprocessing script.\n")
 
-    # extract_cropped_images()
+    if not exists(CROPPED_IMAGES_PATH):
+        extract_cropped_images()
 
     # images_df = load_images()
     # print(f"{len(images_df)} images have been loaded with {len(images_df['label_name'].unique())} different labels.\n")
@@ -140,45 +120,9 @@ if __name__ == '__main__':
 
     # print_images_dimensions(images_df)
 
-    image_size = (200, 200)
+    image_size = (224, 224)
     batch_size = 32
 
-    dataset_train = get_dataset(CROPPED_IMAGES_PATH, validation_split=0.25, data_type='training')
-    dataset_val = get_dataset(CROPPED_IMAGES_PATH, validation_split=0.25, data_type='validation')
-    dataset_test = get_dataset(CROPPED_IMAGES_PATH, data_type=None)
-
-    # Création du callback
-    model_save_path = f"{MODELS_PATH}/model_best_weights.keras"
-    checkpoint = ModelCheckpoint(model_save_path, monitor='val_loss', verbose=1, save_best_only=True, mode='min')
-    es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)
-    callbacks_list = [checkpoint, es]
-
-    with tf.device('/gpu:0'):
-        model = create_model()
-
-        history = model.fit(dataset_train,
-                            validation_data=dataset_val,
-                            batch_size=batch_size,
-                            epochs=50,
-                            callbacks=callbacks_list,
-                            verbose=1)
-
-        # Score of last epoch
-        loss, accuracy = model.evaluate(dataset_train, verbose=True)
-        print("Training Accuracy   : {:.4f}".format(accuracy))
-        print()
-        loss, accuracy = model.evaluate(dataset_val, verbose=True)
-        print("Validation Accuracy :  {:.4f}".format(accuracy))
-
-        # Score of optimal epoch
-        model.load_weights(model_save_path)
-
-        loss, accuracy = model.evaluate(dataset_val, verbose=False)
-        print("Validation Accuracy :  {:.4f}".format(accuracy))
-
-        loss, accuracy = model.evaluate(dataset_test, verbose=False)
-        print("Test Accuracy       :  {:.4f}".format(accuracy))
-
-        show_history(history)
-        plot_history(history, path="transfer_learning_history.png")
-        plt.close()
+    dataset_train = get_dataset(CROPPED_IMAGES_PATH, image_size, validation_split=0.25, data_type='training')
+    dataset_val = get_dataset(CROPPED_IMAGES_PATH, image_size, validation_split=0.25, data_type='validation')
+    dataset_test = get_dataset(CROPPED_IMAGES_PATH, image_size, data_type=None)

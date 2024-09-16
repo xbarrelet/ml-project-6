@@ -1,6 +1,7 @@
 import os
 import shutil
 import time
+from pprint import pprint
 
 import keras
 import matplotlib.pyplot as plt
@@ -9,13 +10,13 @@ from keras import layers, Sequential
 from keras.src.applications.convnext import ConvNeXtXLarge
 from keras.src.applications.efficientnet_v2 import EfficientNetV2L
 from keras.src.applications.inception_resnet_v2 import InceptionResNetV2
-from keras.src.applications.resnet_v2 import ResNet152V2
-from keras.src.applications.vgg19 import VGG19
+from keras.src.applications.resnet_v2 import ResNet50V2
+from keras.src.applications.vgg16 import VGG16
 from keras.src.applications.xception import Xception
 from keras.src.callbacks import ModelCheckpoint, EarlyStopping
 from keras.src.utils import image_dataset_from_directory
 from pandas import DataFrame
-from plot_keras_history import plot_history
+from plot_keras_history import plot_history, show_history
 
 CROPPED_IMAGES_PATH = "resources/Cropped_Images"
 MODELS_PATH = "models/transfer_learning"
@@ -84,49 +85,51 @@ def create_model(image_size, base_model):
 
 
 def get_base_model(base_model, image_size):
+    input_shape = image_size + (3,)
     preprocessing_input = keras.layers.Input([224, 224, 3])
 
     match base_model:
-        case "VGG19":
-            return (VGG19(include_top=False, weights="imagenet", input_shape=image_size + (3,),
-                          input_tensor=keras.applications.vgg19.preprocess_input(preprocessing_input)))
+        case "VGG16":
+            return (VGG16(include_top=False, weights="imagenet", input_shape=input_shape,
+                          input_tensor=keras.applications.vgg16.preprocess_input(preprocessing_input)))
         case "Xception":
-            return (Xception(include_top=False, weights="imagenet", input_shape=image_size + (3,),
+            return (Xception(include_top=False, weights="imagenet", input_shape=input_shape,
                              input_tensor=keras.applications.xception.preprocess_input(preprocessing_input)))
-        case "ResNet152V2":
-            return (ResNet152V2(include_top=False, weights="imagenet", input_shape=image_size + (3,),
-                                input_tensor=keras.applications.resnet_v2.preprocess_input(preprocessing_input)))
+        case "ResNet50V2":
+            return (ResNet50V2(include_top=False, weights="imagenet", input_shape=input_shape,
+                               input_tensor=keras.applications.resnet_v2.preprocess_input(preprocessing_input)))
         case "InceptionResNetV2":
-            return (InceptionResNetV2(include_top=False, weights="imagenet", input_shape=image_size + (3,),
-                                      input_tensor=keras.applications.inception_resnet_v2.preprocess_input(preprocessing_input)))
+            return (InceptionResNetV2(include_top=False, weights="imagenet", input_shape=input_shape,
+                                      input_tensor=keras.applications.inception_resnet_v2.preprocess_input(
+                                          preprocessing_input)))
         case "EfficientNetV2L":
             # The preprocessing logic has been included in the EfficientNetV2 model implementation.
-            return EfficientNetV2L(include_top=False, weights="imagenet", input_shape=image_size + (3,))
+            return EfficientNetV2L(include_top=False, weights="imagenet", input_shape=input_shape)
         case "ConvNeXtXLarge":
             # The preprocessing logic has been included in the convnext model implementation.
-            return ConvNeXtXLarge(include_top=False, weights="imagenet", input_shape=image_size + (3,))
+            return ConvNeXtXLarge(include_top=False, weights="imagenet", input_shape=input_shape)
         case _:
             return None
 
 
-def create_results_plots(results):
-    create_results_plot(results, "fitting_time", ascending=True)
-    create_results_plot(results, "test_accuracy")
-    create_results_plot(results, "test_loss", ascending=True)
-    create_results_plot(results, "val_accuracy")
-    create_results_plot(results, "val_loss", ascending=True)
+def display_results_plots(results):
+    display_results_plot(results, ["fitting_time"], "fitting_time")
+    display_results_plot(results, ["test_accuracy", "val_accuracy"], "accuracies", ascending=False)
+    display_results_plot(results, ["test_loss", "val_loss"], "losses")
 
 
-def create_results_plot(results, metric, ascending=False):
-    results.sort_values(metric, ascending=ascending, inplace=True)
+def display_results_plot(results, metrics, metrics_name, ascending=True):
+    results.sort_values(metrics[0], ascending=ascending, inplace=True)
 
-    performance_plot = (results[[metric, "model_name"]]
-                        .plot(kind="bar", x="model_name", figsize=(15, 8), rot=0,
-                              title=f"Models Sorted by {metric}"))
+    performance_plot = (results[metrics + ["model_name"]]
+                        .plot(kind="line", x="model_name", figsize=(15, 8), rot=0,
+                              title=f"Models Sorted by {metrics_name}"))
     performance_plot.title.set_size(20)
+    performance_plot.set_xticks(range(0, len(results)))
     performance_plot.set(xlabel=None)
 
-    performance_plot.get_figure().savefig(f"{RESULTS_PATH}/{metric}_plot.png", bbox_inches='tight')
+    performance_plot.get_figure().savefig(f"{RESULTS_PATH}/{metrics_name}_plot.png", bbox_inches='tight')
+    # plt.show()
     plt.close()
 
 
@@ -146,10 +149,10 @@ if __name__ == '__main__':
         histories = []
         results = []
         for model_name in [
-            "VGG19",
-            "Xception",
-            "ResNet152V2",
-            "InceptionResNetV2",
+            "VGG16",
+            # "Xception",
+            # "ResNet50V2",
+            # "InceptionResNetV2",
             # "EfficientNetV2L",
             # "ConvNeXtXLarge"
         ]:
@@ -158,13 +161,15 @@ if __name__ == '__main__':
             base_model = get_base_model(model_name, image_size)
 
             model = create_model(image_size, base_model)
-            model_save_path = f"{MODELS_PATH}/{model_name}_best_weights.keras"
 
+            # Callbacks
+            model_save_path = f"{MODELS_PATH}/{model_name}_best_weights.keras"
             checkpoint = ModelCheckpoint(model_save_path, monitor='val_loss', verbose=1, save_best_only=True,
                                          mode='min')
             es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)
             callbacks_list = [checkpoint, es]
 
+            # Fitting the model
             fitting_start_time = time.time()
             history = model.fit(dataset_train,
                                 validation_data=dataset_val,
@@ -178,13 +183,7 @@ if __name__ == '__main__':
             histories.append(history)
             print("The model has been fitted, checking their loss and accuracy.\n")
 
-            # Score of last epoch, useful?
-            # loss, accuracy = model.evaluate(dataset_train, verbose=True)
-            # print(f"\nTraining Accuracy:{accuracy}.\n")
-            # loss, accuracy = model.evaluate(dataset_val, verbose=True)
-            # print(f"\nValidation Accuracy:{accuracy}.\n")
-
-            # Score of optimal epoch
+            # Getting optimal epoch weights
             model.load_weights(model_save_path)
 
             val_loss, val_accuracy = model.evaluate(dataset_val, verbose=False)
@@ -198,7 +197,7 @@ if __name__ == '__main__':
                 "fitting_time": fitting_time,
                 "test_accuracy": test_accuracy,
                 "test_loss": test_loss,
-                "validation_accuracy": val_accuracy,
+                "val_accuracy": val_accuracy,
                 "val_loss": val_loss
             })
 
@@ -206,7 +205,8 @@ if __name__ == '__main__':
             plot_history(history, path=f"{RESULTS_PATH}/{model_name}_learning_history.png")
             plt.close()
 
-        print("Plotting all histories.\n")
+        print("Displaying all histories.\n")
+        # show_history(histories)
         plot_history(
             histories,
             show_standard_deviation=False,
@@ -214,6 +214,6 @@ if __name__ == '__main__':
             path=f"{RESULTS_PATH}/all_learning_histories.png"
         )
 
-        create_results_plots(DataFrame(results))
+        display_results_plots(DataFrame(results))
 
     print("The transfer learning script is now finished.\n")

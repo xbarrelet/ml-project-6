@@ -1,13 +1,15 @@
 import glob
 import os
 import shutil
+import time
 from xml.etree import ElementTree
 
 import keras
 import tensorflow as tf
 from PIL import Image
 from keras import layers, Sequential, Input, Model
-from keras.src.callbacks import ModelCheckpoint, EarlyStopping
+from keras.src.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
+from keras.src.optimizers import Adam
 from keras.src.utils import image_dataset_from_directory, plot_model
 from matplotlib import pyplot as plt
 from pandas import DataFrame
@@ -91,21 +93,21 @@ def print_images_dimensions(images_df):
     print(dimensions_df.describe())
 
 
-def get_dataset(path, validation_split=0.0, data_type=None):
+def get_dataset(path, image_size, validation_split=0.0, data_type=None):
     return image_dataset_from_directory(
         path,
         labels='inferred',
         label_mode='categorical',
         class_names=None,
         batch_size=batch_size,
-        image_size=(200, 200),
+        image_size=image_size,
         seed=42,
         validation_split=validation_split,
         subset=data_type
     )
 
 
-def make_model(input_shape, num_classes):
+def make_model(input_shape, labels_number):
     inputs = Input(shape=input_shape)
 
     # Entry block
@@ -114,11 +116,14 @@ def make_model(input_shape, num_classes):
     x = layers.BatchNormalization()(x)
     x = layers.Activation("relu")(x)
 
-    previous_block_activation = x  # Set aside residual
+    previous_block_activation = x
 
     for size in [256, 512, 728]:
+        # applies a specific activation function to its input, introduce non-linearity, allowing the network to learn complex patterns
         x = layers.Activation("relu")(x)
+        # SeparableConv2D layers are more parameter-efficient than standard convolutions
         x = layers.SeparableConv2D(size, 3, padding="same")(x)
+        # Help with training stability and speed
         x = layers.BatchNormalization()(x)
 
         x = layers.Activation("relu")(x)
@@ -127,10 +132,8 @@ def make_model(input_shape, num_classes):
 
         x = layers.MaxPooling2D(3, strides=2, padding="same")(x)
 
-        # Project residual
-        residual = layers.Conv2D(size, 1, strides=2, padding="same")(
-            previous_block_activation
-        )
+        # Residual connections, help in training deeper networks by allowing gradients to flow more easily.
+        residual = layers.Conv2D(size, 1, strides=2, padding="same")(previous_block_activation)
         x = layers.add([x, residual])  # Add back residual
         previous_block_activation = x  # Set aside next residual
 
@@ -139,76 +142,73 @@ def make_model(input_shape, num_classes):
     x = layers.Activation("relu")(x)
 
     x = layers.GlobalAveragePooling2D()(x)
-    if num_classes == 2:
-        units = 1
-    else:
-        units = num_classes
 
     x = layers.Dropout(0.25)(x)
     # We specify activation=None so as to return logits
-    outputs = layers.Dense(units, activation=None)(x)
+    outputs = layers.Dense(labels_number, activation=None)(x)
+
+    # From Claude, a simpler one but mine is more efficient
+    # model = Sequential([
+    #     Conv2D(64, (3, 3), activation='relu', padding='same', input_shape=input_shape),
+    #     MaxPooling2D(2, 2),
+    #     Conv2D(128, (3, 3), activation='relu', padding='same'),
+    #     MaxPooling2D(2, 2),
+    #     Conv2D(256, (3, 3), activation='relu', padding='same'),
+    #     MaxPooling2D(2, 2),
+    #     Flatten(),
+    #     Dropout(0.5),
+    #     Dense(512, activation='relu'),
+    #     Dropout(0.5),
+    #     Dense(num_classes, activation='softmax')
+    # ])
+
     return Model(inputs, outputs)
 
 
 if __name__ == '__main__':
-    print("Starting analysis and preprocessing script.\n")
+    print("Starting custom model learning script.\n")
 
-    # extract_cropped_images()
-
-    # images_df = load_images()
-    # print(f"{len(images_df)} images have been loaded with {len(images_df['label_name'].unique())} different labels.\n")
-
-    # print("Number of images per label:")
-    # print(images_df.groupby("label_name").count())
-
-    # print_images_dimensions(images_df)
-
-    image_size = (200, 200)
+    image_size = (224, 224)
     batch_size = 32
 
-    dataset_train = get_dataset(CROPPED_IMAGES_PATH, validation_split=0.25, data_type='training')
-    dataset_val = get_dataset(CROPPED_IMAGES_PATH, validation_split=0.25, data_type='validation')
-    dataset_test = get_dataset(CROPPED_IMAGES_PATH, data_type=None)
-
-    # Création du callback
-    model_save_path = f"{MODELS_PATH}/custom_model_best_weights.keras"
-    checkpoint = ModelCheckpoint(model_save_path, monitor='val_loss', verbose=1, save_best_only=True, mode='min')
-    es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)
-    callbacks_list = [checkpoint, es]
+    dataset_train = get_dataset(CROPPED_IMAGES_PATH, image_size, validation_split=0.25, data_type='training')
+    dataset_val = get_dataset(CROPPED_IMAGES_PATH, image_size, validation_split=0.25, data_type='validation')
+    dataset_test = get_dataset(CROPPED_IMAGES_PATH, image_size, data_type=None)
 
     with tf.device('/gpu:0'):
-        model = make_model(input_shape=image_size + (3,), num_classes=120)
+        model = make_model(input_shape=image_size + (3,), labels_number=120)
         # plot_model(model, show_shapes=True)
 
-        epochs = 50
+        model.compile(optimizer=Adam(learning_rate=0.001),
+                      loss='categorical_crossentropy',
+                      metrics=['accuracy'])
 
-        # callbacks = [
-        #     keras.callbacks.ModelCheckpoint("save_at_{epoch}.keras"),
-        # ]
+        # Callbacks
+        model_save_path = f"{MODELS_PATH}/custom_model_best_weights.keras"
+        checkpoint = ModelCheckpoint(model_save_path, monitor='val_loss', verbose=1, save_best_only=True,
+                                     mode='min')
+        es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)
+        callbacks_list = [checkpoint, es]
 
-        # TODO: Loss et metrics sont pas corrects
-        model.compile(
-            optimizer=keras.optimizers.Adam(3e-4),
-            loss=keras.losses.BinaryCrossentropy(from_logits=True),
-            metrics=[keras.metrics.BinaryAccuracy(name="acc")],
-        )
+        # Fitting the model
+        fitting_start_time = time.time()
+        history = model.fit(dataset_train,
+                            validation_data=dataset_val,
+                            batch_size=batch_size,
+                            epochs=5,
+                            # epochs=100,  # We want early stopping to stop the training itself
+                            callbacks=callbacks_list,
+                            verbose=1)
+        fitting_time = time.time() - fitting_start_time
 
-        history = model.fit(
-            dataset_train,
-            epochs=epochs,
-            callbacks=callbacks_list,
-            validation_data=dataset_val,
-        )
+        # Getting optimal epoch weights
+        model.load_weights(model_save_path)
 
-        # Score of last epoch
-        loss, accuracy = model.evaluate(dataset_train, verbose=True)
-        print("Training Accuracy   : {:.4f}".format(accuracy))
-        print()
-        loss, accuracy = model.evaluate(dataset_val, verbose=True)
-        print("Validation Accuracy :  {:.4f}".format(accuracy))
+        val_loss, val_accuracy = model.evaluate(dataset_val, verbose=False)
+        print(f"\nValidation Accuracy:{val_accuracy}.\n")
 
-        loss, accuracy = model.evaluate(dataset_test, verbose=False)
-        print("Test Accuracy       :  {:.4f}".format(accuracy))
+        test_loss, test_accuracy = model.evaluate(dataset_test, verbose=False)
+        print(f"\nTest Accuracy:{test_accuracy}.\n")
 
         # show_history(history)
         plot_history(history, path="custom_model_results.png")
