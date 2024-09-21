@@ -55,9 +55,8 @@ def create_model(image_size, base_model):
     ])
 
     model = Sequential([
-        # Data preparation
+        # Data augmentation
         data_augmentation_layers,
-        layers.Rescaling(1. / 127.5, offset=-1),
 
         # Pre-trained model without the top
         base_model,
@@ -70,7 +69,7 @@ def create_model(image_size, base_model):
 
         # Dropout layer to prevent overfitting. Randomly stops some neurons for each image so that the other neurons have to adapt to that, to reduce overfitting.
         # Not the latest method to do this, batch normalization for example is better. Check more online.
-        layers.Dropout(0.5),
+        layers.Dropout(0.2),
 
         # Output layer with the same layer as your labels. Softmax to allow the model to predict the probability of each class.
         layers.Dense(120, activation='softmax')

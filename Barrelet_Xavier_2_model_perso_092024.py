@@ -1,7 +1,9 @@
 import glob
+import math
 import os
 import shutil
 import time
+from pprint import pprint
 from xml.etree import ElementTree
 
 import keras
@@ -17,14 +19,19 @@ from plot_keras_history import show_history, plot_history
 from sklearn.preprocessing import LabelEncoder
 
 IMAGES_PATH = "resources/Images"
-CROPPED_IMAGES_PATH = "resources/Cropped_Images"
-MODELS_PATH = "models"
+CROPPED_IMAGES_PATH = "resources/Cropped_Images2"
+MODELS_PATH = "models/custom_model"
+MODEL_SAVE_PATH = f"{MODELS_PATH}/custom_model.keras"
+RESULTS_PATH = "results/custom_model"
 
-data_augmentation_layers = Sequential([
-    layers.RandomFlip("horizontal", input_shape=(200, 200, 3)),
-    layers.RandomRotation(0.1),
-    layers.RandomZoom(0.1),
-])
+
+
+def remove_last_generated_models_and_results():
+    shutil.rmtree(MODELS_PATH, ignore_errors=True)
+    os.makedirs(MODELS_PATH)
+
+    shutil.rmtree(RESULTS_PATH, ignore_errors=True)
+    os.makedirs(RESULTS_PATH)
 
 
 def extract_information_from_annotations(image_path):
@@ -107,109 +114,127 @@ def get_dataset(path, image_size, validation_split=0.0, data_type=None):
     )
 
 
-def make_model(input_shape, labels_number):
-    inputs = Input(shape=input_shape)
+def create_model(input_shape, labels_number, kernel_size=(3, 3), number_of_intermediate_layers=3, dropout_rate=0.2):
 
-    # Entry block
-    x = layers.Rescaling(1.0 / 255)(inputs)
-    x = layers.Conv2D(128, 3, strides=2, padding="same")(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Activation("relu")(x)
+    intermediate_layers = Sequential()
+    for i in range(1, number_of_intermediate_layers + 1):
+        intermediate_layers.add(layers.Conv2D(int(32 * math.pow(2, i)), kernel_size, activation='relu', padding='same'))
+        intermediate_layers.add(layers.MaxPooling2D(2, 2))
 
-    previous_block_activation = x
+    return Sequential([
+        Input(shape=input_shape),
 
-    for size in [256, 512, 728]:
-        # applies a specific activation function to its input, introduce non-linearity, allowing the network to learn complex patterns
-        x = layers.Activation("relu")(x)
-        # SeparableConv2D layers are more parameter-efficient than standard convolutions
-        x = layers.SeparableConv2D(size, 3, padding="same")(x)
-        # Help with training stability and speed
-        x = layers.BatchNormalization()(x)
+        # Data augmentation layers
+        layers.RandomFlip("horizontal"),
+        layers.RandomRotation(0.1),
 
-        x = layers.Activation("relu")(x)
-        x = layers.SeparableConv2D(size, 3, padding="same")(x)
-        x = layers.BatchNormalization()(x)
+        intermediate_layers,
 
-        x = layers.MaxPooling2D(3, strides=2, padding="same")(x)
+        layers.Flatten(),
+        layers.Dropout(dropout_rate),
 
-        # Residual connections, help in training deeper networks by allowing gradients to flow more easily.
-        residual = layers.Conv2D(size, 1, strides=2, padding="same")(previous_block_activation)
-        x = layers.add([x, residual])  # Add back residual
-        previous_block_activation = x  # Set aside next residual
+        layers.Dense(512, activation='relu'),
+        layers.Dropout(dropout_rate),
 
-    x = layers.SeparableConv2D(1024, 3, padding="same")(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Activation("relu")(x)
+        layers.Dense(labels_number, activation='softmax')
+    ])
 
-    x = layers.GlobalAveragePooling2D()(x)
 
-    x = layers.Dropout(0.25)(x)
-    # We specify activation=None so as to return logits
-    outputs = layers.Dense(labels_number, activation=None)(x)
+def display_results_plots(results):
+    display_results_plot(results, ["fitting_time"], "fitting_time")
+    display_results_plot(results, ["test_accuracy", "val_accuracy"], "accuracies", ascending=False)
+    display_results_plot(results, ["test_loss", "val_loss"], "losses")
 
-    # From Claude, a simpler one but mine is more efficient
-    # model = Sequential([
-    #     Conv2D(64, (3, 3), activation='relu', padding='same', input_shape=input_shape),
-    #     MaxPooling2D(2, 2),
-    #     Conv2D(128, (3, 3), activation='relu', padding='same'),
-    #     MaxPooling2D(2, 2),
-    #     Conv2D(256, (3, 3), activation='relu', padding='same'),
-    #     MaxPooling2D(2, 2),
-    #     Flatten(),
-    #     Dropout(0.5),
-    #     Dense(512, activation='relu'),
-    #     Dropout(0.5),
-    #     Dense(num_classes, activation='softmax')
-    # ])
 
-    return Model(inputs, outputs)
+def display_results_plot(results, metrics, metrics_name, ascending=True):
+    results.sort_values(metrics[0], ascending=ascending, inplace=True)
+
+    performance_plot = (results[metrics + ["model_name"]]
+                        .plot(kind="line", x="model_name", figsize=(15, 8), rot=0,
+                              title=f"Models Sorted by {metrics_name}"))
+    performance_plot.title.set_size(20)
+    performance_plot.set_xticks(range(0, len(results)))
+    performance_plot.set(xlabel=None)
+
+    performance_plot.get_figure().savefig(f"{RESULTS_PATH}/{metrics_name}_plot.png", bbox_inches='tight')
+    # plt.show()
+    plt.close()
+
+
+def get_callbacks():
+    checkpoint = ModelCheckpoint(MODEL_SAVE_PATH, monitor='val_loss', verbose=1, save_best_only=True, mode='min')
+    es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)
+    return [checkpoint, es]
 
 
 if __name__ == '__main__':
-    print("Starting custom model learning script.\n")
+    print("Starting custom models learning script.\n")
+    remove_last_generated_models_and_results()
 
     image_size = (224, 224)
     batch_size = 32
+    labels_number = 4
 
     dataset_train = get_dataset(CROPPED_IMAGES_PATH, image_size, validation_split=0.25, data_type='training')
     dataset_val = get_dataset(CROPPED_IMAGES_PATH, image_size, validation_split=0.25, data_type='validation')
     dataset_test = get_dataset(CROPPED_IMAGES_PATH, image_size, data_type=None)
 
-    with tf.device('/gpu:0'):
-        model = make_model(input_shape=image_size + (3,), labels_number=120)
-        # plot_model(model, show_shapes=True)
+    # Layers hyperoptimization
+    results = []
+    for hyperparameters in [
+        {"name": "one_intermediate_layer", "parameters":{"number_of_intermediate_layers": 1}},
+        {"name": "two_intermediate_layers", "parameters":{"number_of_intermediate_layers": 2}},
+        {"name": "three_intermediate_layers", "parameters":{"number_of_intermediate_layers": 3}},
 
-        model.compile(optimizer=Adam(learning_rate=0.001),
-                      loss='categorical_crossentropy',
-                      metrics=['accuracy'])
+        {"name": "kernel_layer_size_one", "parameters":{"kernel_size": (1,1)}},
+        {"name": "kernel_layer_size_two", "parameters":{"kernel_size": (2,2)}},
+        {"name": "kernel_layer_size_three", "parameters":{"kernel_size": (3,3)}},
 
-        # Callbacks
-        model_save_path = f"{MODELS_PATH}/custom_model_best_weights.keras"
-        checkpoint = ModelCheckpoint(model_save_path, monitor='val_loss', verbose=1, save_best_only=True,
-                                     mode='min')
-        es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)
-        callbacks_list = [checkpoint, es]
+        {"name": "dropout_rate_0.1", "parameters":{"dropout_rate": 0.1}},
+        {"name": "dropout_rate_0.2", "parameters":{"dropout_rate": 0.2}},
+        {"name": "dropout_rate_0.5", "parameters":{"dropout_rate": 0.5}},
+    ]:
+        with tf.device('/gpu:0'):
+            model = create_model(input_shape=image_size + (3,), labels_number=labels_number,
+                                 **hyperparameters["parameters"])
 
-        # Fitting the model
-        fitting_start_time = time.time()
-        history = model.fit(dataset_train,
-                            validation_data=dataset_val,
-                            batch_size=batch_size,
-                            epochs=5,
-                            # epochs=100,  # We want early stopping to stop the training itself
-                            callbacks=callbacks_list,
-                            verbose=1)
-        fitting_time = time.time() - fitting_start_time
+            # # TODO: Use something else than Adam, le learning rate as well
+            model.compile(optimizer=Adam(learning_rate=0.001), loss='categorical_crossentropy', metrics=['accuracy'])
 
-        # Getting optimal epoch weights
-        model.load_weights(model_save_path)
+            fitting_start_time = time.time()
+            # TODO: Avec/sans early stopping et 25-50-75-100 epochs.
+            # Essaie aussi avec batch size 16-32-64
+            history = model.fit(dataset_train,
+                                validation_data=dataset_val,
+                                batch_size=batch_size,
+                                epochs=2,
+                                # epochs=100,  # We want early stopping to stop the training itself
+                                callbacks=get_callbacks(),
+                                verbose=1)
+            fitting_time = time.time() - fitting_start_time
 
-        val_loss, val_accuracy = model.evaluate(dataset_val, verbose=False)
-        print(f"\nValidation Accuracy:{val_accuracy}.\n")
+            # Getting optimal epoch weights
+            model.load_weights(MODEL_SAVE_PATH)
 
-        test_loss, test_accuracy = model.evaluate(dataset_test, verbose=False)
-        print(f"\nTest Accuracy:{test_accuracy}.\n")
+            val_loss, val_accuracy = model.evaluate(dataset_val, verbose=False)
+            print(f"\nValidation Accuracy:{val_accuracy}.\n")
 
-        # show_history(history)
-        plot_history(history, path="custom_model_results.png")
-        plt.close()
+            test_loss, test_accuracy = model.evaluate(dataset_test, verbose=False)
+            print(f"\nTest Accuracy:{test_accuracy}.\n")
+
+            results.append({
+                "hyperparameters_name": hyperparameters["name"],
+                "fitting_time": fitting_time,
+                "test_accuracy": test_accuracy,
+                "test_loss": test_loss,
+                "val_accuracy": val_accuracy,
+                "val_loss": val_loss
+            })
+
+            # show_history(history)
+            plot_history(history, path=f"{hyperparameters["name"]}_results.png")
+            plt.close()
+
+        display_results_plots(DataFrame(results))
+
+    print("Custom models learning script finished.\n")

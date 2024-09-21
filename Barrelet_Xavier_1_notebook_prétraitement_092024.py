@@ -1,29 +1,17 @@
 import glob
 import os
-import shutil
 from os.path import exists
 from xml.etree import ElementTree
 
-import matplotlib.pyplot as plt
-import tensorflow as tf
+import cv2
 from PIL import Image
-from keras import layers, Sequential
-from keras.src.applications.vgg16 import VGG16
-from keras.src.callbacks import ModelCheckpoint, EarlyStopping
-from keras.src.utils import image_dataset_from_directory
+from matplotlib import pyplot as plt
 from pandas import DataFrame
-from plot_keras_history import show_history, plot_history
 from sklearn.preprocessing import LabelEncoder
 
 IMAGES_PATH = "resources/Images"
-CROPPED_IMAGES_PATH = "resources/Cropped_Images"
+CROPPED_IMAGES_PATH = "resources/Cropped_Images2"
 MODELS_PATH = "models"
-
-data_augmentation_layers = Sequential([
-    layers.RandomFlip("horizontal", input_shape=(200, 200, 3)),
-    layers.RandomRotation(0.1),
-    layers.RandomZoom(0.1),
-])
 
 
 def extract_information_from_annotations(image_path):
@@ -62,11 +50,16 @@ def extract_cropped_images():
     print(f"All cropped images have been extracted and saved under:{CROPPED_IMAGES_PATH}.\n")
 
 
+def load_image(row):
+    return cv2.imread(row['image_path'], 1)
+
+
 def load_images():
     images_df = DataFrame()
 
     all_images = list(glob.glob(f"{CROPPED_IMAGES_PATH}/*/*.jpg"))
     images_df["image_path"] = all_images
+    images_df["image"] = images_df.apply(load_image, axis=1)
 
     images_df["label_name"] = images_df["image_path"].apply(lambda path: path.split("/")[-2].lower())
 
@@ -91,19 +84,20 @@ def print_images_dimensions(images_df):
     print(dimensions_df.describe())
 
 
-def get_dataset(path, image_size, validation_split=0.0, data_type=None):
-    return image_dataset_from_directory(
-        path,
-        labels='inferred',
-        label_mode='categorical',
-        class_names=None,
-        batch_size=batch_size,
-        image_size=image_size,
-        seed=42,
-        validation_split=validation_split,
-        subset=data_type
-    )
+def resize_image(row):
+    return cv2.resize(row['image'], (224, 224))
 
+
+def convert_image_to_grayscale(row):
+    return cv2.cvtColor(row['resized_image'], cv2.COLOR_BGR2GRAY)
+
+
+def denoise_image(row):
+    return cv2.fastNlMeansDenoising(row['grayscaled_image'], None, 10, 7, 21)
+
+
+def equalize_histogram(row):
+    return cv2.equalizeHist(row['grayscaled_image'])
 
 
 if __name__ == '__main__':
@@ -112,17 +106,41 @@ if __name__ == '__main__':
     if not exists(CROPPED_IMAGES_PATH):
         extract_cropped_images()
 
-    # images_df = load_images()
-    # print(f"{len(images_df)} images have been loaded with {len(images_df['label_name'].unique())} different labels.\n")
+    images_df = load_images()
+    print(f"{len(images_df)} images have been loaded with {len(images_df['label_name'].unique())} different labels.\n")
 
+    # Do a line plot with numbers per label?
     # print("Number of images per label:")
     # print(images_df.groupby("label_name").count())
 
     # print_images_dimensions(images_df)
 
-    image_size = (224, 224)
-    batch_size = 32
+    images_df = images_df.head(5)
+    # CE2 Le candidat a présenté des opérations de retraitement d'images (par exemple passage en gris, filtrage du bruit, égalisation, floutage) sur un ou plusieurs exemples #
 
-    dataset_train = get_dataset(CROPPED_IMAGES_PATH, image_size, validation_split=0.25, data_type='training')
-    dataset_val = get_dataset(CROPPED_IMAGES_PATH, image_size, validation_split=0.25, data_type='validation')
-    dataset_test = get_dataset(CROPPED_IMAGES_PATH, image_size, data_type=None)
+    print("Creating now resized images.\n")
+    # Resizing image to fit the 224x224 input size of most models
+    images_df["resized_image"] = images_df.apply(resize_image, axis=1)
+
+    print("Creating now grayscaled images.\n")
+    # Conversion of the image to grayscale as color is not a relevant information in race detection
+    # TODO: Check si tu gardes les 3 channels pour la presentation
+    images_df["grayscaled_image"] = images_df.apply(convert_image_to_grayscale, axis=1)
+
+    print("Creating now denoised images.\n")
+    # Denoise image to improve its quality and reduce the impact of noise on the model
+    images_df["denoised_image"] = images_df.apply(denoise_image, axis=1)
+
+    print("Creating now equalized images.\n")
+    # Equalize the histogram of the image to improve the contrast and make the features more visible
+    images_df["equalized_image"] = images_df.apply(equalize_histogram, axis=1)
+
+    plt.imshow(cv2.hconcat([
+        # images_df.iloc[0]['image'],
+        # images_df.iloc[0]['resized_image'],
+        images_df.iloc[0]['grayscaled_image'],
+        images_df.iloc[0]['denoised_image'],
+        images_df.iloc[0]['equalized_image']
+    ]))
+    # TODO: PLT has options to display greyscale as grey
+    plt.show()
