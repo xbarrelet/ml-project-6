@@ -4,6 +4,7 @@ from os.path import exists
 from xml.etree import ElementTree
 
 import cv2
+import numpy as np
 from PIL import Image
 from matplotlib import pyplot as plt
 from pandas import DataFrame
@@ -82,6 +83,7 @@ def print_images_dimensions(images_df):
 
     dimensions_df = DataFrame(dimensions)
     print(dimensions_df.describe())
+    print("\n")
 
 
 def resize_image(row):
@@ -100,6 +102,28 @@ def equalize_histogram(row):
     return cv2.equalizeHist(row['grayscaled_image'])
 
 
+def display_images_count_per_label(images_df):
+    counts = []
+    for label in images_df['label_name'].unique():
+        counts.append({"label": label, "count": len(images_df[images_df['label_name'] == label])})
+
+    counts_df = DataFrame(counts).sort_values("label")
+    counts_plot = (counts_df.plot(kind="line", x="label", figsize=(15, 8), rot=0,
+                                   title=f"Count of images per label"))
+
+    mean_count = sum(count['count'] for count in counts) / len(counts)
+    plt.axhline(y=mean_count, color='g', linestyle='-')
+    plt.yticks(list(plt.yticks()[0]) + [mean_count])
+
+    counts_plot.title.set_size(20)
+    counts_plot.set(xlabel=None)
+    plt.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
+    plt.gca().get_legend().remove()
+
+    plt.show()
+    plt.close()
+
+
 if __name__ == '__main__':
     print("Starting analysis and preprocessing script.\n")
 
@@ -109,14 +133,13 @@ if __name__ == '__main__':
     images_df = load_images()
     print(f"{len(images_df)} images have been loaded with {len(images_df['label_name'].unique())} different labels.\n")
 
-    # Do a line plot with numbers per label?
-    # print("Number of images per label:")
-    # print(images_df.groupby("label_name").count())
+    # print("Displaying now the count of images per label.\n")
+    # display_images_count_per_label(images_df)
 
+    # print("Displaying now the dimensions of the images.\n")
     # print_images_dimensions(images_df)
 
     images_df = images_df.head(5)
-    # CE2 Le candidat a présenté des opérations de retraitement d'images (par exemple passage en gris, filtrage du bruit, égalisation, floutage) sur un ou plusieurs exemples #
 
     print("Creating now resized images.\n")
     # Resizing image to fit the 224x224 input size of most models
@@ -124,7 +147,6 @@ if __name__ == '__main__':
 
     print("Creating now grayscaled images.\n")
     # Conversion of the image to grayscale as color is not a relevant information in race detection
-    # TODO: Check si tu gardes les 3 channels pour la presentation
     images_df["grayscaled_image"] = images_df.apply(convert_image_to_grayscale, axis=1)
 
     print("Creating now denoised images.\n")
@@ -135,12 +157,19 @@ if __name__ == '__main__':
     # Equalize the histogram of the image to improve the contrast and make the features more visible
     images_df["equalized_image"] = images_df.apply(equalize_histogram, axis=1)
 
-    plt.imshow(cv2.hconcat([
-        # images_df.iloc[0]['image'],
-        # images_df.iloc[0]['resized_image'],
-        images_df.iloc[0]['grayscaled_image'],
-        images_df.iloc[0]['denoised_image'],
-        images_df.iloc[0]['equalized_image']
-    ]))
-    # TODO: PLT has options to display greyscale as grey
-    plt.show()
+    for image_index in range(1, len(images_df) + 1):
+        print(f"Displaying different states of image number:{image_index}.\n")
+        image = images_df.iloc[image_index]
+
+        f, ax = plt.subplots(2, 3, figsize=(9, 6))
+        ax[0, 0].imshow(image['image'])
+        ax[0, 1].imshow(image['resized_image'])
+        ax[0, 2].axis('off')
+        ax[1, 0].imshow(image['grayscaled_image'], cmap='gray', vmin=0, vmax=255)
+        ax[1, 1].imshow(image['denoised_image'], cmap='gray', vmin=0, vmax=255)
+        ax[1, 2].imshow(image['equalized_image'], cmap='gray', vmin=0, vmax=255)
+
+        plt.show()
+        plt.close()
+
+    print("Analysis and preprocessing script finished.\n")
