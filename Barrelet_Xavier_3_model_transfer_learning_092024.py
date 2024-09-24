@@ -150,7 +150,7 @@ if __name__ == '__main__':
             # "Xception",
             # "ResNet50V2",
             # "InceptionResNetV2",
-            # "EfficientNetV2L",
+            "EfficientNetV2L",
             # "ConvNeXtXLarge"
         ]:
             print(f"Training model {model_name}.\n")
@@ -171,8 +171,8 @@ if __name__ == '__main__':
             history = model.fit(dataset_train,
                                 validation_data=dataset_val,
                                 batch_size=batch_size,
-                                epochs=5,
-                                # epochs=100,  # We want early stopping to stop the training itself
+                                # epochs=5,
+                                epochs=100,  # We want early stopping to stop the training itself
                                 callbacks=callbacks_list,
                                 verbose=1)
             fitting_time = time.time() - fitting_start_time
@@ -197,6 +197,8 @@ if __name__ == '__main__':
                 "val_accuracy": val_accuracy,
                 "val_loss": val_loss
             })
+
+            model.export(f"{MODELS_PATH}/{model_name}_model.keras")
 
             # show_history(history)
             plot_history(history, path=f"{RESULTS_PATH}/{model_name}_learning_history.png")
