@@ -1,21 +1,21 @@
+import gc
 import glob
 import math
 import os
 import shutil
 import time
-from pprint import pprint
 from xml.etree import ElementTree
 
 import keras
 import tensorflow as tf
 from PIL import Image
-from keras import layers, Sequential, Input, Model
-from keras.src.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
-from keras.src.optimizers import Adam
-from keras.src.utils import image_dataset_from_directory, plot_model
+from keras import layers, Sequential, Input
+from keras.src.callbacks import ModelCheckpoint, EarlyStopping
+from keras.src.optimizers import Adam, AdamW, RMSprop, SGD
+from keras.src.utils import image_dataset_from_directory
 from matplotlib import pyplot as plt
 from pandas import DataFrame
-from plot_keras_history import show_history, plot_history
+from plot_keras_history import plot_history
 from sklearn.preprocessing import LabelEncoder
 
 IMAGES_PATH = "resources/Images"
@@ -23,7 +23,6 @@ CROPPED_IMAGES_PATH = "resources/Cropped_Images2"
 MODELS_PATH = "models/custom_model"
 MODEL_SAVE_PATH = f"{MODELS_PATH}/custom_model.keras"
 RESULTS_PATH = "results/custom_model"
-
 
 
 def remove_last_generated_models_and_results():
@@ -100,7 +99,7 @@ def print_images_dimensions(images_df):
     print(dimensions_df.describe())
 
 
-def get_dataset(path, image_size, validation_split=0.0, data_type=None):
+def get_dataset(path, image_size, validation_split=0.0, data_type=None, batch_size=32):
     return image_dataset_from_directory(
         path,
         labels='inferred',
@@ -114,14 +113,30 @@ def get_dataset(path, image_size, validation_split=0.0, data_type=None):
     )
 
 
-def create_model(input_shape, labels_number, kernel_size=(3, 3), number_of_intermediate_layers=3, dropout_rate=0.2):
+def get_optimizer(optimizer, learning_rate):
+    match optimizer:
+        case "adam":
+            return Adam(learning_rate=learning_rate)
+        case "adamw":
+            return AdamW(learning_rate=learning_rate)
+        case "rmsprop":
+            return RMSprop(learning_rate=learning_rate)
+        case "sgd":
+            return SGD(learning_rate=learning_rate)
+        case "sgdn":
+            return SGD(learning_rate=learning_rate, nesterov=True)
+        case _:
+            raise ValueError(f"Unknown optimizer:{optimizer}.")
 
+
+def create_model(input_shape, labels_number, kernel_size=(3, 3), number_of_intermediate_layers=3, dropout_rate=0.2,
+                 optimizer="adam", learning_rate=0.001):
     intermediate_layers = Sequential()
     for i in range(1, number_of_intermediate_layers + 1):
         intermediate_layers.add(layers.Conv2D(int(32 * math.pow(2, i)), kernel_size, activation='relu', padding='same'))
         intermediate_layers.add(layers.MaxPooling2D(2, 2))
 
-    return Sequential([
+    model = Sequential([
         Input(shape=input_shape),
 
         # Data augmentation layers
@@ -139,6 +154,11 @@ def create_model(input_shape, labels_number, kernel_size=(3, 3), number_of_inter
         layers.Dense(labels_number, activation='softmax')
     ])
 
+    optimizer = get_optimizer(optimizer, learning_rate)
+    model.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
+
+    return model
+
 
 def display_results_plots(results):
     display_results_plot(results, ["fitting_time"], "fitting_time")
@@ -149,8 +169,8 @@ def display_results_plots(results):
 def display_results_plot(results, metrics, metrics_name, ascending=True):
     results.sort_values(metrics[0], ascending=ascending, inplace=True)
 
-    performance_plot = (results[metrics + ["model_name"]]
-                        .plot(kind="line", x="model_name", figsize=(15, 8), rot=0,
+    performance_plot = (results[metrics + ["hyperparameters_name"]]
+                        .plot(kind="line", x="hyperparameters_name", figsize=(15, 8), rot=0,
                               title=f"Models Sorted by {metrics_name}"))
     performance_plot.title.set_size(20)
     performance_plot.set_xticks(range(0, len(results)))
@@ -161,10 +181,58 @@ def display_results_plot(results, metrics, metrics_name, ascending=True):
     plt.close()
 
 
-def get_callbacks():
+def get_callbacks(with_early_stopping):
     checkpoint = ModelCheckpoint(MODEL_SAVE_PATH, monitor='val_loss', verbose=1, save_best_only=True, mode='min')
     es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)
-    return [checkpoint, es]
+
+    return [checkpoint, es] if with_early_stopping else [checkpoint]
+
+
+def get_results_of_model(model, parameters, epoch=100, batch_size=32, with_early_stopping=True):
+    dataset_train = get_dataset(CROPPED_IMAGES_PATH, image_size, validation_split=0.25, data_type='training')
+    dataset_val = get_dataset(CROPPED_IMAGES_PATH, image_size, validation_split=0.25, data_type='validation')
+    dataset_test = get_dataset(CROPPED_IMAGES_PATH, image_size, data_type=None)
+
+    fitting_start_time = time.time()
+    history = model.fit(dataset_train,
+                        validation_data=dataset_val,
+                        batch_size=batch_size,
+                        # epochs=2,
+                        epochs=epoch,
+                        callbacks=get_callbacks(with_early_stopping),
+                        verbose=1)
+    fitting_time = time.time() - fitting_start_time
+
+    model.load_weights(MODEL_SAVE_PATH)
+
+    val_loss, val_accuracy = model.evaluate(dataset_val, verbose=False)
+    print(f"\nValidation Accuracy:{val_accuracy}.")
+
+    test_loss, test_accuracy = model.evaluate(dataset_test, verbose=False)
+    print(f"\nTest Accuracy:{test_accuracy}.\n")
+
+    return {
+        "hyperparameters_name": hyperparameters["name"],
+        "fitting_time": fitting_time,
+        "test_accuracy": test_accuracy,
+        "test_loss": test_loss,
+        "val_accuracy": val_accuracy,
+        "val_loss": val_loss,
+        "history": history,
+        **parameters
+    }
+
+
+def display_results(sorted_results, parameter_name):
+    # show_history(history)
+    plot_history([result['history'] for result in sorted_results], path=f"{RESULTS_PATH}/{parameter_name}_results.png")
+    plt.close()
+
+
+def get_best_parameter(sorted_results, parameter_name):
+    best_parameter = sorted_results[0][parameter_name]
+    print(f"Best parameter:{parameter_name.replace("_", " ")} found:{best_parameter}.\n")
+    return best_parameter
 
 
 if __name__ == '__main__':
@@ -172,69 +240,189 @@ if __name__ == '__main__':
     remove_last_generated_models_and_results()
 
     image_size = (224, 224)
-    batch_size = 32
-    labels_number = 4
+    labels_number = 3
 
-    dataset_train = get_dataset(CROPPED_IMAGES_PATH, image_size, validation_split=0.25, data_type='training')
-    dataset_val = get_dataset(CROPPED_IMAGES_PATH, image_size, validation_split=0.25, data_type='validation')
-    dataset_test = get_dataset(CROPPED_IMAGES_PATH, image_size, data_type=None)
+    # dataset_train = get_dataset(CROPPED_IMAGES_PATH, image_size, validation_split=0.25, data_type='training')
+    # dataset_val = get_dataset(CROPPED_IMAGES_PATH, image_size, validation_split=0.25, data_type='validation')
+    # dataset_test = get_dataset(CROPPED_IMAGES_PATH, image_size, data_type=None)
 
-    # Layers hyperoptimization
+    best_layers_parameters = {}
+
+    # MODEL HYPEROPTIMIZATION
     results = []
     for hyperparameters in [
-        {"name": "one_intermediate_layer", "parameters":{"number_of_intermediate_layers": 1}},
-        {"name": "two_intermediate_layers", "parameters":{"number_of_intermediate_layers": 2}},
-        {"name": "three_intermediate_layers", "parameters":{"number_of_intermediate_layers": 3}},
-
-        {"name": "kernel_layer_size_one", "parameters":{"kernel_size": (1,1)}},
-        {"name": "kernel_layer_size_two", "parameters":{"kernel_size": (2,2)}},
-        {"name": "kernel_layer_size_three", "parameters":{"kernel_size": (3,3)}},
-
-        {"name": "dropout_rate_0.1", "parameters":{"dropout_rate": 0.1}},
-        {"name": "dropout_rate_0.2", "parameters":{"dropout_rate": 0.2}},
-        {"name": "dropout_rate_0.5", "parameters":{"dropout_rate": 0.5}},
+        # {"name": "1_intermediate_layers", "parameters": {"number_of_intermediate_layers": 1}}, # Too much gpu memory needed
+        {"name": "2_intermediate_layers", "parameters": {"number_of_intermediate_layers": 2}},
+        {"name": "3_intermediate_layers", "parameters": {"number_of_intermediate_layers": 3}},
+        {"name": "4_intermediate_layers", "parameters": {"number_of_intermediate_layers": 4}},
+        # {"name": "5_intermediate_layers", "parameters": {"number_of_intermediate_layers": 5}} # Creating the model already takes too much gpu memory
     ]:
-        with tf.device('/gpu:0'):
-            model = create_model(input_shape=image_size + (3,), labels_number=labels_number,
-                                 **hyperparameters["parameters"])
+        print(f"\nTesting now the parameters:{hyperparameters["parameters"]}.\n")
+        model = create_model(input_shape=image_size + (3,), labels_number=labels_number,
+                             **hyperparameters["parameters"])
 
-            # # TODO: Use something else than Adam, le learning rate as well
-            model.compile(optimizer=Adam(learning_rate=0.001), loss='categorical_crossentropy', metrics=['accuracy'])
+        results.append(get_results_of_model(model, hyperparameters["parameters"]))
+        del model
+        gc.collect()
+        keras.backend.clear_session()
 
-            fitting_start_time = time.time()
-            # TODO: Avec/sans early stopping et 25-50-75-100 epochs.
-            # Essaie aussi avec batch size 16-32-64
-            history = model.fit(dataset_train,
-                                validation_data=dataset_val,
-                                batch_size=batch_size,
-                                epochs=2,
-                                # epochs=100,  # We want early stopping to stop the training itself
-                                callbacks=get_callbacks(),
-                                verbose=1)
-            fitting_time = time.time() - fitting_start_time
+    sorted_results = sorted(results, key=lambda x: x["val_accuracy"], reverse=True)
+    best_layers_parameters["number_of_intermediate_layers"] = get_best_parameter(sorted_results,
+                                                                                 "number_of_intermediate_layers")
+    display_results(sorted_results, "number_of_intermediate_layers")
 
-            # Getting optimal epoch weights
-            model.load_weights(MODEL_SAVE_PATH)
+    results = []
+    for hyperparameters in [
+        # {"name": "kernel_layer_size_1", "parameters": {"kernel_size": (1, 1)}}, # Too much gpu memory needed
+        # {"name": "kernel_layer_size_2", "parameters": {"kernel_size": (2, 2)}}, # Too much gpu memory needed
+        {"name": "kernel_layer_size_3", "parameters": {"kernel_size": (3, 3)}},
+        {"name": "kernel_layer_size_4", "parameters": {"kernel_size": (4, 4)}},
+        {"name": "kernel_layer_size_5", "parameters": {"kernel_size": (5, 5)}},
+    ]:
+        print(f"Testing now the parameters:{hyperparameters["parameters"]}.\n")
+        model = create_model(input_shape=image_size + (3,), labels_number=labels_number,
+                             number_of_intermediate_layers=best_layers_parameters["number_of_intermediate_layers"],
+                             **hyperparameters["parameters"])
 
-            val_loss, val_accuracy = model.evaluate(dataset_val, verbose=False)
-            print(f"\nValidation Accuracy:{val_accuracy}.\n")
+        results.append(get_results_of_model(model, hyperparameters["parameters"]))
+        del model
+        gc.collect()
+        keras.backend.clear_session()
 
-            test_loss, test_accuracy = model.evaluate(dataset_test, verbose=False)
-            print(f"\nTest Accuracy:{test_accuracy}.\n")
+    sorted_results = sorted(results, key=lambda x: x["val_accuracy"], reverse=True)
+    best_layers_parameters["kernel_size"] = get_best_parameter(sorted_results, "kernel_size")
+    display_results(sorted_results, "kernel_size")
+    # best_layers_parameters["kernel_size"] = (3,3)
 
-            results.append({
-                "hyperparameters_name": hyperparameters["name"],
-                "fitting_time": fitting_time,
-                "test_accuracy": test_accuracy,
-                "test_loss": test_loss,
-                "val_accuracy": val_accuracy,
-                "val_loss": val_loss
-            })
+    results = []
+    for hyperparameters in [
+        {"name": "dropout_rate_0.1", "parameters": {"dropout_rate": 0.1}},
+        {"name": "dropout_rate_0.2", "parameters": {"dropout_rate": 0.2}},
+        {"name": "dropout_rate_0.3", "parameters": {"dropout_rate": 0.3}},
+        {"name": "dropout_rate_0.4", "parameters": {"dropout_rate": 0.4}},
+        {"name": "dropout_rate_0.5", "parameters": {"dropout_rate": 0.5}},
+        {"name": "dropout_rate_0.6", "parameters": {"dropout_rate": 0.6}},
+        {"name": "dropout_rate_0.7", "parameters": {"dropout_rate": 0.7}},
+    ]:
+        print(f"Testing now the parameters:{hyperparameters["parameters"]}.\n")
+        model = create_model(input_shape=image_size + (3,), labels_number=labels_number,
+                             number_of_intermediate_layers=best_layers_parameters["number_of_intermediate_layers"],
+                             kernel_size=best_layers_parameters["kernel_size"], **hyperparameters["parameters"])
 
-            # show_history(history)
-            plot_history(history, path=f"{hyperparameters["name"]}_results.png")
-            plt.close()
+        results.append(get_results_of_model(model, hyperparameters["parameters"]))
+        del model
+        gc.collect()
+        keras.backend.clear_session()
 
-        display_results_plots(DataFrame(results))
+    sorted_results = sorted(results, key=lambda x: x["val_accuracy"], reverse=True)
+    best_layers_parameters["dropout_rate"] = get_best_parameter(sorted_results, "dropout_rate")
+    display_results(sorted_results, "dropout_rate")
 
+    # COMPILATION HYPEROPTIMIZATION
+    results = []
+    for hyperparameters in [
+        {"name": "rmsprop_optimizer", "parameters": {"optimizer": "rmsprop"}},
+        {"name": "adam_optimizer", "parameters": {"optimizer": "adam"}},
+        {"name": "adamw_optimizer", "parameters": {"optimizer": "adamw"}},
+        {"name": "sgd_optimizer", "parameters": {"optimizer": "sgd"}},
+        {"name": "sgd_nesterov_optimizer", "parameters": {"optimizer": "sgdn"}},
+    ]:
+        print(f"Testing now the parameters:{hyperparameters["parameters"]}.\n")
+        model = create_model(input_shape=image_size + (3,), labels_number=labels_number,
+                             number_of_intermediate_layers=best_layers_parameters["number_of_intermediate_layers"],
+                             kernel_size=best_layers_parameters["kernel_size"],
+                             dropout_rate=best_layers_parameters["dropout_rate"],
+                             **hyperparameters["parameters"])
+
+        results.append(get_results_of_model(model, hyperparameters["parameters"]))
+        del model
+        gc.collect()
+        keras.backend.clear_session()
+
+    sorted_results = sorted(results, key=lambda x: x["val_accuracy"], reverse=True)
+    best_layers_parameters["optimizer"] = get_best_parameter(sorted_results, "optimizer")
+    display_results(sorted_results, "optimizer")
+
+    results = []
+    for hyperparameters in [
+        {"name": "learning_rate_0.0001", "parameters": {"learning_rate": 0.0001}},
+        {"name": "learning_rate_0.0005", "parameters": {"learning_rate": 0.0005}},
+        {"name": "learning_rate_0.001", "parameters": {"learning_rate": 0.001}},
+        {"name": "learning_rate_0.005", "parameters": {"learning_rate": 0.005}},
+        {"name": "learning_rate_0.01", "parameters": {"learning_rate": 0.01}},
+        {"name": "learning_rate_0.05", "parameters": {"learning_rate": 0.05}},
+    ]:
+        print(f"Testing now the parameters:{hyperparameters["parameters"]}.\n")
+
+        model = create_model(input_shape=image_size + (3,), labels_number=labels_number,
+                             number_of_intermediate_layers=best_layers_parameters["number_of_intermediate_layers"],
+                             kernel_size=best_layers_parameters["kernel_size"],
+                             dropout_rate=best_layers_parameters["dropout_rate"],
+                             optimizer=best_layers_parameters["optimizer"],
+                             **hyperparameters["parameters"])
+        results.append(get_results_of_model(model, hyperparameters["parameters"]))
+        del model
+        gc.collect()
+        keras.backend.clear_session()
+
+    sorted_results = sorted(results, key=lambda x: x["val_accuracy"], reverse=True)
+    best_layers_parameters["learning_rate"] = get_best_parameter(sorted_results, "learning_rate")
+    display_results(sorted_results, "learning_rate")
+
+    # EXECUTION HYPEROPTIMIZATION
+    results = []
+    for hyperparameters in [
+        {"name": "epoch_25", "parameters": {"epoch": 25, "with_early_stopping": False}},
+        {"name": "epoch_50", "parameters": {"epoch": 50, "with_early_stopping": False}},
+        {"name": "epoch_75", "parameters": {"epoch": 75, "with_early_stopping": False}},
+        {"name": "epoch_100", "parameters": {"epoch": 100, "with_early_stopping": False}},
+        {"name": "early_stopping", "parameters": {"epoch": 100, "with_early_stopping": True}},
+    ]:
+        print(f"Testing now the parameters:{hyperparameters["parameters"]}.\n")
+
+        model = create_model(input_shape=image_size + (3,), labels_number=labels_number,
+                             number_of_intermediate_layers=best_layers_parameters["number_of_intermediate_layers"],
+                             kernel_size=best_layers_parameters["kernel_size"],
+                             dropout_rate=best_layers_parameters["dropout_rate"],
+                             optimizer=best_layers_parameters["optimizer"],
+                             learning_rate=best_layers_parameters["learning_rate"])
+        results.append(get_results_of_model(model, hyperparameters["parameters"],
+                                            **hyperparameters["parameters"]))
+        del model
+        gc.collect()
+        keras.backend.clear_session()
+
+    sorted_results = sorted(results, key=lambda x: x["val_accuracy"], reverse=True)
+    best_layers_parameters["epoch"] = get_best_parameter(sorted_results, "epoch")
+    best_layers_parameters["with_early_stopping"] = get_best_parameter(sorted_results, "with_early_stopping")
+    display_results(sorted_results, "epoch")
+
+    results = []
+    for hyperparameters in [
+        {"name": "batch_size_16", "parameters": {"batch_size": 16}},
+        {"name": "batch_size_32", "parameters": {"batch_size": 32}},
+        {"name": "batch_size_64", "parameters": {"batch_size": 64}},
+    ]:
+        print(f"Testing now the parameters:{hyperparameters["parameters"]}.\n")
+
+        model = create_model(input_shape=image_size + (3,), labels_number=labels_number,
+                             number_of_intermediate_layers=best_layers_parameters["number_of_intermediate_layers"],
+                             kernel_size=best_layers_parameters["kernel_size"],
+                             dropout_rate=best_layers_parameters["dropout_rate"],
+                             optimizer=best_layers_parameters["optimizer"],
+                             learning_rate=best_layers_parameters["learning_rate"])
+
+        results.append(get_results_of_model(model, hyperparameters["parameters"],
+                                            epoch=best_layers_parameters["epoch"],
+                                            with_early_stopping=best_layers_parameters["with_early_stopping"],
+                                            **hyperparameters["parameters"]))
+        del model
+        gc.collect()
+        keras.backend.clear_session()
+
+    sorted_results = sorted(results, key=lambda x: x["val_accuracy"], reverse=True)
+    best_layers_parameters["batch_size"] = get_best_parameter(sorted_results, "batch_size")
+    display_results(sorted_results, "batch_size")
+
+    print(f"Hyperoptimization now done. Best hyperparameters found:{best_layers_parameters}.\n")
     print("Custom models learning script finished.\n")

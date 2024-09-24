@@ -4,7 +4,6 @@ from os.path import exists
 from xml.etree import ElementTree
 
 import cv2
-import numpy as np
 from PIL import Image
 from matplotlib import pyplot as plt
 from pandas import DataFrame
@@ -109,7 +108,7 @@ def display_images_count_per_label(images_df):
 
     counts_df = DataFrame(counts).sort_values("label")
     counts_plot = (counts_df.plot(kind="line", x="label", figsize=(15, 8), rot=0,
-                                   title=f"Count of images per label"))
+                                  title=f"Count of images per label"))
 
     mean_count = sum(count['count'] for count in counts) / len(counts)
     plt.axhline(y=mean_count, color='g', linestyle='-')

@@ -1,7 +1,6 @@
 import os
 import shutil
 import time
-from pprint import pprint
 
 import keras
 import matplotlib.pyplot as plt
@@ -16,7 +15,7 @@ from keras.src.applications.xception import Xception
 from keras.src.callbacks import ModelCheckpoint, EarlyStopping
 from keras.src.utils import image_dataset_from_directory
 from pandas import DataFrame
-from plot_keras_history import plot_history, show_history
+from plot_keras_history import plot_history
 
 CROPPED_IMAGES_PATH = "resources/Cropped_Images"
 MODELS_PATH = "models/transfer_learning"
@@ -144,7 +143,6 @@ if __name__ == '__main__':
     dataset_test = get_dataset(CROPPED_IMAGES_PATH, image_size, data_type=None)
 
     with tf.device('/gpu:0'):
-
         histories = []
         results = []
         for model_name in [
