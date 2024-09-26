@@ -67,7 +67,6 @@ def create_model(image_size, base_model):
         layers.Dense(256, activation='relu'),
 
         # Dropout layer to prevent overfitting. Randomly stops some neurons for each image so that the other neurons have to adapt to that, to reduce overfitting.
-        # Not the latest method to do this, batch normalization for example is better. Check more online.
         layers.Dropout(0.2),
 
         # Output layer with the same layer as your labels. Softmax to allow the model to predict the probability of each class.
@@ -146,7 +145,7 @@ if __name__ == '__main__':
         histories = []
         results = []
         for model_name in [
-            "VGG16",
+            # "VGG16",
             # "Xception",
             # "ResNet50V2",
             # "InceptionResNetV2",
@@ -163,7 +162,7 @@ if __name__ == '__main__':
             model_save_path = f"{MODELS_PATH}/{model_name}_best_weights.keras"
             checkpoint = ModelCheckpoint(model_save_path, monitor='val_loss', verbose=1, save_best_only=True,
                                          mode='min')
-            es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)
+            es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=20)
             callbacks_list = [checkpoint, es]
 
             # Fitting the model
