@@ -1,6 +1,7 @@
 import os
 import shutil
 import time
+from logging import ERROR
 
 import keras
 import matplotlib.pyplot as plt
@@ -181,6 +182,8 @@ if __name__ == '__main__':
 
             # Getting optimal epoch weights
             model.load_weights(model_save_path)
+
+            tf.get_logger().setLevel(ERROR)
 
             val_loss, val_accuracy = model.evaluate(dataset_val, verbose=False)
             print(f"\nValidation Accuracy:{val_accuracy}.\n")
