@@ -24,8 +24,8 @@ RESULTS_PATH = "results/transfer_learning"
 
 
 def remove_last_generated_models_and_results():
-    shutil.rmtree(MODELS_PATH, ignore_errors=True)
-    os.makedirs(MODELS_PATH)
+    # shutil.rmtree(MODELS_PATH, ignore_errors=True)
+    # os.makedirs(MODELS_PATH)
 
     shutil.rmtree(RESULTS_PATH, ignore_errors=True)
     os.makedirs(RESULTS_PATH)
